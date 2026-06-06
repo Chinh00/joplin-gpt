@@ -19,10 +19,18 @@ type ChatCompletionResponse = {
 
 const settingSection = 'joplinGptAssistant';
 const settings = {
+	provider: 'joplinGptAssistant.provider',
 	apiKey: 'joplinGptAssistant.apiKey',
 	baseUrl: 'joplinGptAssistant.baseUrl',
+	nineRouterBaseUrl: 'joplinGptAssistant.nineRouterBaseUrl',
 	model: 'joplinGptAssistant.model',
 	systemPrompt: 'joplinGptAssistant.systemPrompt',
+};
+
+const providerValues = {
+	openAi: 'openai',
+	nineRouter: '9router',
+	custom: 'custom',
 };
 
 async function settingValue(name: string): Promise<string> {
@@ -41,20 +49,26 @@ function stripTrailingSlash(value: string): string {
 }
 
 async function askGpt(messages: ChatMessage[]): Promise<string> {
+	const provider = await settingValue(settings.provider);
 	const apiKey = await settingValue(settings.apiKey);
-	const baseUrl = stripTrailingSlash(await settingValue(settings.baseUrl));
+	const baseUrl = stripTrailingSlash(provider === providerValues.nineRouter
+		? await settingValue(settings.nineRouterBaseUrl)
+		: await settingValue(settings.baseUrl));
 	const model = await settingValue(settings.model);
 
-	if (!apiKey) throw new Error('Bạn chưa cấu hình OpenAI API key trong Joplin settings.');
+	if (!apiKey && provider !== providerValues.nineRouter) throw new Error('Bạn chưa cấu hình API key trong Joplin settings.');
 	if (!baseUrl) throw new Error('Bạn chưa cấu hình API base URL.');
 	if (!model) throw new Error('Bạn chưa cấu hình model.');
 
+	const headers: Record<string, string> = {
+		'Content-Type': 'application/json',
+	};
+
+	if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+
 	const response = await fetch(`${baseUrl}/chat/completions`, {
 		method: 'POST',
-		headers: {
-			'Authorization': `Bearer ${apiKey}`,
-			'Content-Type': 'application/json',
-		},
+		headers,
 		body: JSON.stringify({
 			model,
 			messages,
@@ -105,6 +119,20 @@ joplin.plugins.register({
 		});
 
 		await joplin.settings.registerSettings({
+			[settings.provider]: {
+				value: providerValues.openAi,
+				type: SettingItemType.String,
+				section: settingSection,
+				public: true,
+				label: 'Provider',
+				description: 'Chọn OpenAI, 9Router local gateway, hoặc endpoint OpenAI-compatible tuỳ chỉnh.',
+				isEnum: true,
+				options: {
+					[providerValues.openAi]: 'OpenAI',
+					[providerValues.nineRouter]: '9Router',
+					[providerValues.custom]: 'Custom OpenAI-compatible',
+				},
+			},
 			[settings.apiKey]: {
 				value: '',
 				type: SettingItemType.String,
@@ -112,7 +140,7 @@ joplin.plugins.register({
 				public: false,
 				secure: true,
 				label: 'API key',
-				description: 'OpenAI hoặc API key từ provider tương thích OpenAI.',
+				description: 'OpenAI hoặc provider tương thích OpenAI. Có thể để trống nếu 9Router local không bật auth.',
 			},
 			[settings.baseUrl]: {
 				value: 'https://api.openai.com/v1',
@@ -120,7 +148,15 @@ joplin.plugins.register({
 				section: settingSection,
 				public: true,
 				label: 'API base URL',
-				description: 'Ví dụ: https://api.openai.com/v1 hoặc endpoint OpenAI-compatible khác.',
+				description: 'Dùng cho OpenAI hoặc Custom OpenAI-compatible endpoint.',
+			},
+			[settings.nineRouterBaseUrl]: {
+				value: 'http://localhost:20128/v1',
+				type: SettingItemType.String,
+				section: settingSection,
+				public: true,
+				label: '9Router base URL',
+				description: 'Mặc định 9Router local là http://localhost:20128/v1. Có thể đổi sang tunnel/cloud URL nếu bạn bật remote access.',
 			},
 			[settings.model]: {
 				value: 'gpt-4.1-mini',
