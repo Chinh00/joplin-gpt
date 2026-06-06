@@ -48,6 +48,86 @@ function stripTrailingSlash(value: string): string {
 	return value.replace(/\/+$/, '');
 }
 
+function escapeHtml(value: string): string {
+	return value
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;')
+		.replace(/'/g, '&#039;');
+}
+
+async function openSettingsDialog(): Promise<void> {
+	const dialog = await joplin.views.dialogs.create('joplinGptAssistantSettingsDialog');
+	const provider = await settingValue(settings.provider) || providerValues.openAi;
+	const apiKey = await settingValue(settings.apiKey);
+	const baseUrl = await settingValue(settings.baseUrl) || 'https://api.openai.com/v1';
+	const nineRouterBaseUrl = await settingValue(settings.nineRouterBaseUrl) || 'http://localhost:20128/v1';
+	const model = await settingValue(settings.model) || 'gpt-4.1-mini';
+	const systemPrompt = await settingValue(settings.systemPrompt) || 'Bạn là trợ lý ghi chú trong Joplin. Trả lời ngắn gọn, rõ ràng, bằng tiếng Việt.';
+
+	await joplin.views.dialogs.setHtml(dialog, `
+		<form name="settings">
+			<style>
+				body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; padding: 8px; }
+				.field { margin-bottom: 14px; }
+				label { display: block; font-weight: 600; margin-bottom: 6px; }
+				input, select, textarea { box-sizing: border-box; width: 100%; padding: 8px; }
+				textarea { min-height: 90px; resize: vertical; }
+				.hint { color: #666; font-size: 12px; margin-top: 4px; }
+			</style>
+			<h2>Joplin GPT Assistant</h2>
+			<div class="field">
+				<label for="provider">Provider</label>
+				<select id="provider" name="provider">
+					<option value="${providerValues.openAi}" ${provider === providerValues.openAi ? 'selected' : ''}>OpenAI</option>
+					<option value="${providerValues.nineRouter}" ${provider === providerValues.nineRouter ? 'selected' : ''}>9Router</option>
+					<option value="${providerValues.custom}" ${provider === providerValues.custom ? 'selected' : ''}>Custom OpenAI-compatible</option>
+				</select>
+			</div>
+			<div class="field">
+				<label for="apiKey">API key</label>
+				<input id="apiKey" name="apiKey" type="password" value="${escapeHtml(apiKey)}" placeholder="sk-..." />
+				<div class="hint">Có thể để trống nếu dùng 9Router local không bật auth.</div>
+			</div>
+			<div class="field">
+				<label for="baseUrl">API base URL</label>
+				<input id="baseUrl" name="baseUrl" type="text" value="${escapeHtml(baseUrl)}" />
+				<div class="hint">Dùng cho OpenAI hoặc Custom. Ví dụ: https://api.openai.com/v1</div>
+			</div>
+			<div class="field">
+				<label for="nineRouterBaseUrl">9Router base URL</label>
+				<input id="nineRouterBaseUrl" name="nineRouterBaseUrl" type="text" value="${escapeHtml(nineRouterBaseUrl)}" />
+				<div class="hint">Mặc định: http://localhost:20128/v1</div>
+			</div>
+			<div class="field">
+				<label for="model">Model</label>
+				<input id="model" name="model" type="text" value="${escapeHtml(model)}" placeholder="gpt-4.1-mini" />
+			</div>
+			<div class="field">
+				<label for="systemPrompt">System prompt</label>
+				<textarea id="systemPrompt" name="systemPrompt">${escapeHtml(systemPrompt)}</textarea>
+			</div>
+		</form>
+	`);
+	await joplin.views.dialogs.setButtons(dialog, [
+		{ id: 'submit', title: 'Lưu cấu hình' },
+		{ id: 'cancel', title: 'Huỷ' },
+	]);
+
+	const result = await joplin.views.dialogs.open(dialog);
+	if (result.id !== 'submit') return;
+
+	const formData = result.formData?.settings || {};
+	await joplin.settings.setValue(settings.provider, String(formData.provider || providerValues.openAi));
+	await joplin.settings.setValue(settings.apiKey, String(formData.apiKey || ''));
+	await joplin.settings.setValue(settings.baseUrl, String(formData.baseUrl || 'https://api.openai.com/v1'));
+	await joplin.settings.setValue(settings.nineRouterBaseUrl, String(formData.nineRouterBaseUrl || 'http://localhost:20128/v1'));
+	await joplin.settings.setValue(settings.model, String(formData.model || 'gpt-4.1-mini'));
+	await joplin.settings.setValue(settings.systemPrompt, String(formData.systemPrompt || ''));
+	await joplin.views.dialogs.showMessageBox('Đã lưu cấu hình Joplin GPT Assistant.');
+}
+
 async function askGpt(messages: ChatMessage[]): Promise<string> {
 	const provider = await settingValue(settings.provider);
 	const apiKey = await settingValue(settings.apiKey);
@@ -176,6 +256,12 @@ joplin.plugins.register({
 		});
 
 		await joplin.commands.register({
+			name: 'joplinGptOpenSettings',
+			label: 'GPT: Cấu hình',
+			execute: async () => openSettingsDialog(),
+		});
+
+		await joplin.commands.register({
 			name: 'joplinGptSummarizeNote',
 			label: 'GPT: Tóm tắt note',
 			execute: async () => runNoteAction('GPT Summary', 'Hãy tóm tắt note này thành các ý chính, giữ lại việc cần làm nếu có.'),
@@ -187,8 +273,10 @@ joplin.plugins.register({
 			execute: async () => runNoteAction('GPT Rewrite', 'Hãy viết lại note này rõ ràng, có cấu trúc hơn, không thêm thông tin không có trong note.'),
 		});
 
+		await joplin.views.menuItems.create('joplinGptOpenSettingsMenu', 'joplinGptOpenSettings', MenuItemLocation.Tools);
 		await joplin.views.menuItems.create('joplinGptSummarizeNoteMenu', 'joplinGptSummarizeNote', MenuItemLocation.Tools);
 		await joplin.views.menuItems.create('joplinGptRewriteNoteMenu', 'joplinGptRewriteNote', MenuItemLocation.Tools);
+		await joplin.views.toolbarButtons.create('joplinGptOpenSettingsToolbar', 'joplinGptOpenSettings', ToolbarButtonLocation.NoteToolbar);
 		await joplin.views.toolbarButtons.create('joplinGptSummarizeNoteToolbar', 'joplinGptSummarizeNote', ToolbarButtonLocation.NoteToolbar);
 	},
 });
