@@ -1,0 +1,16 @@
+{
+  "manifest_version": 1,
+  "id": "com.personal.joplin-gpt-assistant",
+  "app_min_version": "3.5",
+  "version": "1.0.0",
+  "name": "Joplin GPT Assistant",
+  "description": "Summarize, rewrite, and ask GPT about the current Joplin note using an OpenAI-compatible API.",
+  "author": "Nguyen Van Chinh",
+  "homepage_url": "",
+  "repository_url": "",
+  "keywords": ["gpt", "openai", "ai", "assistant"],
+  "categories": ["productivity", "integrations"],
+  "screenshots": [],
+  "icons": {},
+  "promo_tile": {}
+}
