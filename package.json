@@ -1,7 +1,7 @@
 {
   "name": "joplin-plugin-gpt-assistant",
   "version": "1.0.0",
-  "description": "A Joplin plugin that adds GPT actions for the current note.",
+  "description": "GPT assistant for Joplin notes with OpenAI, 9Router, and custom OpenAI-compatible providers.",
   "main": "dist/index.js",
   "scripts": {
     "dist": "webpack --env joplin-plugin-config=buildMain && webpack --env joplin-plugin-config=buildExtraScripts && webpack --env joplin-plugin-config=createArchive",
@@ -14,7 +14,11 @@
     "joplin-plugin",
     "joplin",
     "gpt",
-    "openai"
+    "openai",
+    "9router",
+    "ai",
+    "notes",
+    "productivity"
   ],
   "files": [
     "publish"
@@ -30,5 +34,14 @@
     "typescript": "^4.8.2",
     "webpack": "^5.74.0",
     "webpack-cli": "^4.10.0"
-  }
+  },
+  "homepage": "https://github.com/Chinh00/joplin-gpt#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Chinh00/joplin-gpt.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Chinh00/joplin-gpt/issues"
+  },
+  "author": "Nguyen Van Chinh"
 }

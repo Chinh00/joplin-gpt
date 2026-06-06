@@ -47,3 +47,15 @@ publish/com.personal.joplin-gpt-assistant.jpl
 6. Có thể để trống `API key` nếu 9Router local không bật auth.
 
 Bạn vẫn có thể dùng provider khác bằng cách chọn `Custom OpenAI-compatible` rồi chỉnh `API base URL` và `Model`.
+
+## Publish lên Joplin plugin registry
+
+Joplin tự động index plugin từ npm nếu package có keyword `joplin-plugin` và file build nằm trong thư mục `publish`.
+
+```bash
+npm login
+npm run dist
+npm publish
+```
+
+Sau khi publish, plugin sẽ cần một khoảng thời gian để Joplin plugin registry đồng bộ từ npm.
