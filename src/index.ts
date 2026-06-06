@@ -25,6 +25,7 @@ const settings = {
 	nineRouterBaseUrl: 'joplinGptAssistant.nineRouterBaseUrl',
 	model: 'joplinGptAssistant.model',
 	systemPrompt: 'joplinGptAssistant.systemPrompt',
+	isConfigured: 'joplinGptAssistant.isConfigured',
 };
 
 const providerValues = {
@@ -125,6 +126,7 @@ async function openSettingsDialog(): Promise<void> {
 	await joplin.settings.setValue(settings.nineRouterBaseUrl, String(formData.nineRouterBaseUrl || 'http://localhost:20128/v1'));
 	await joplin.settings.setValue(settings.model, String(formData.model || 'gpt-4.1-mini'));
 	await joplin.settings.setValue(settings.systemPrompt, String(formData.systemPrompt || ''));
+	await joplin.settings.setValue(settings.isConfigured, true);
 	await joplin.views.dialogs.showMessageBox('Đã lưu cấu hình Joplin GPT Assistant.');
 }
 
@@ -217,7 +219,7 @@ joplin.plugins.register({
 				value: '',
 				type: SettingItemType.String,
 				section: settingSection,
-				public: false,
+				public: true,
 				secure: true,
 				label: 'API key',
 				description: 'OpenAI hoặc provider tương thích OpenAI. Có thể để trống nếu 9Router local không bật auth.',
@@ -253,6 +255,13 @@ joplin.plugins.register({
 				public: true,
 				label: 'System prompt',
 			},
+			[settings.isConfigured]: {
+				value: false,
+				type: SettingItemType.Bool,
+				section: settingSection,
+				public: false,
+				label: 'Configured',
+			},
 		});
 
 		await joplin.commands.register({
@@ -274,9 +283,17 @@ joplin.plugins.register({
 		});
 
 		await joplin.views.menuItems.create('joplinGptOpenSettingsMenu', 'joplinGptOpenSettings', MenuItemLocation.Tools);
+		await joplin.views.menuItems.create('joplinGptOpenSettingsNoteMenu', 'joplinGptOpenSettings', MenuItemLocation.Note);
 		await joplin.views.menuItems.create('joplinGptSummarizeNoteMenu', 'joplinGptSummarizeNote', MenuItemLocation.Tools);
 		await joplin.views.menuItems.create('joplinGptRewriteNoteMenu', 'joplinGptRewriteNote', MenuItemLocation.Tools);
 		await joplin.views.toolbarButtons.create('joplinGptOpenSettingsToolbar', 'joplinGptOpenSettings', ToolbarButtonLocation.NoteToolbar);
 		await joplin.views.toolbarButtons.create('joplinGptSummarizeNoteToolbar', 'joplinGptSummarizeNote', ToolbarButtonLocation.NoteToolbar);
+
+		const isConfigured = Boolean(await joplin.settings.value(settings.isConfigured));
+		if (!isConfigured) {
+			setTimeout(() => {
+				void openSettingsDialog();
+			}, 1500);
+		}
 	},
 });
