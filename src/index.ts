@@ -18,7 +18,7 @@ type ChatCompletionResponse = {
 };
 
 type PanelMessage = {
-	type: 'chat';
+	type: 'chat' | 'test';
 	prompt: string;
 	action: 'ask' | 'apply' | 'insert' | 'summarize';
 };
@@ -152,6 +152,7 @@ async function openSettingsDialog(): Promise<void> {
 }
 
 async function askGpt(messages: ChatMessage[]): Promise<string> {
+	const requestTimeoutMs = 60000;
 	const provider = await settingValue(settings.provider);
 	const apiKey = await settingValue(settings.apiKey);
 	const baseUrl = stripTrailingSlash(provider === providerValues.nineRouter
@@ -168,23 +169,62 @@ async function askGpt(messages: ChatMessage[]): Promise<string> {
 	};
 
 	if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
 
-	const response = await fetch(`${baseUrl}/chat/completions`, {
-		method: 'POST',
-		headers,
-		body: JSON.stringify({
-			model,
-			messages,
-			temperature: 0.3,
-		}),
-	});
+	try {
+		const response = await fetch(`${baseUrl}/chat/completions`, {
+			method: 'POST',
+			headers,
+			signal: controller.signal,
+			body: JSON.stringify({
+				model,
+				messages,
+				temperature: 0.3,
+			}),
+		});
 
-	const data = await response.json() as ChatCompletionResponse;
-	if (!response.ok) throw new Error(data.error?.message || `GPT API lỗi HTTP ${response.status}.`);
+		const data = await response.json() as ChatCompletionResponse;
+		if (!response.ok) throw new Error(data.error?.message || `GPT API lỗi HTTP ${response.status}.`);
 
-	const content = data.choices?.[0]?.message?.content?.trim();
-	if (!content) throw new Error('GPT API không trả về nội dung.');
-	return content;
+		const content = data.choices?.[0]?.message?.content?.trim();
+		if (!content) throw new Error('GPT API không trả về nội dung.');
+		return content;
+	} catch (error) {
+		if (error instanceof Error && error.name === 'AbortError') {
+			throw new Error('API không phản hồi sau 60 giây. Kiểm tra 9Router/base URL/model/API key.');
+		}
+		throw error;
+	} finally {
+		clearTimeout(timeout);
+	}
+}
+
+async function testApiConnection(): Promise<string> {
+	const provider = await settingValue(settings.provider);
+	const apiKey = await settingValue(settings.apiKey);
+	const baseUrl = stripTrailingSlash(provider === providerValues.nineRouter
+		? await settingValue(settings.nineRouterBaseUrl)
+		: await settingValue(settings.baseUrl));
+
+	if (!baseUrl) throw new Error('Chưa cấu hình API base URL.');
+
+	const headers: Record<string, string> = {};
+	if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), 15000);
+	try {
+		const response = await fetch(`${baseUrl}/models`, { headers, signal: controller.signal });
+		const text = await response.text();
+		if (!response.ok) throw new Error(`HTTP ${response.status}: ${text.slice(0, 300)}`);
+		return `Kết nối OK: ${baseUrl}`;
+	} catch (error) {
+		if (error instanceof Error && error.name === 'AbortError') throw new Error('Test kết nối timeout sau 15 giây.');
+		throw error;
+	} finally {
+		clearTimeout(timeout);
+	}
 }
 
 async function appendToCurrentNote(markdown: string): Promise<void> {
@@ -285,6 +325,7 @@ function chatPanelHtml(): string {
 			button.primary { background: var(--accent); border-color: var(--accent); color: white; font-weight: 650; }
 			.actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 8px; }
 			.quick { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 7px; }
+			.utility { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 7px; }
 			.hint { font-size: 11px; color: #777; margin-top: 8px; line-height: 1.35; }
 		</style>
 		<div class="header">
@@ -303,6 +344,10 @@ function chatPanelHtml(): string {
 			<div class="quick">
 				<button data-action="insert">Insert into note</button>
 				<button data-action="summarize">Summarize</button>
+			</div>
+			<div class="utility">
+				<button id="test">Test API</button>
+				<button id="clear">Clear chat</button>
 			</div>
 			<div class="hint">⌘/Ctrl + Enter = Ask. Apply sẽ thay đoạn đang bôi đen. Summarize ưu tiên đoạn bôi đen, nếu không có sẽ tóm tắt note.</div>
 		</div>
@@ -323,7 +368,7 @@ function chatPanelHtml(): string {
 				const prompt = promptInput.value.trim();
 				const displayPrompt = prompt || (action === 'summarize' ? 'Summarize current selection/note' : 'Use previous answer');
 				addMessage('user', displayPrompt);
-				const pending = addMessage('assistant', 'Thinking...');
+				const pending = addMessage('assistant', 'Thinking... nếu quá 60 giây sẽ tự báo timeout.');
 				try {
 					const response = await webviewApi.postMessage({ type: 'chat', prompt, action, lastAnswer });
 					if (response.ok) {
@@ -344,6 +389,18 @@ function chatPanelHtml(): string {
 			document.getElementById('config').addEventListener('click', async () => {
 				await webviewApi.postMessage({ type: 'config' });
 			});
+			document.getElementById('test').addEventListener('click', async () => {
+				const pending = addMessage('assistant', 'Testing API connection...');
+				try {
+					const response = await webviewApi.postMessage({ type: 'test' });
+					pending.textContent = response.ok ? response.text : 'Lỗi kết nối: ' + response.error;
+				} catch (error) {
+					pending.textContent = 'Lỗi kết nối: ' + String(error);
+				}
+			});
+			document.getElementById('clear').addEventListener('click', () => {
+				messages.innerHTML = '<div class="message assistant">Chat đã được xoá. Bôi đen đoạn trong note rồi dùng Apply để thay đoạn đó.</div>';
+			});
 			promptInput.addEventListener('keydown', (event) => {
 				if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') run('ask');
 			});
@@ -361,6 +418,10 @@ async function ensureChatPanel(): Promise<string> {
 			if (message.type === 'config') {
 				await openSettingsDialog();
 				return { ok: true, text: 'Đã mở cấu hình.' };
+			}
+
+			if (message.type === 'test') {
+				return { ok: true, text: await testApiConnection() };
 			}
 
 			const contextText = await buildContextText();
