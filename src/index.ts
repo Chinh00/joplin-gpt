@@ -20,7 +20,7 @@ type ChatCompletionResponse = {
 type PanelMessage = {
 	type: 'chat';
 	prompt: string;
-	mode: 'answer' | 'append' | 'replace-selection';
+	action: 'ask' | 'apply' | 'insert' | 'summarize';
 };
 
 const settingSection = 'joplinGptAssistant';
@@ -269,64 +269,83 @@ async function runNoteAction(title: string, instruction: string): Promise<void> 
 function chatPanelHtml(): string {
 	return `
 		<style>
-			:root { color-scheme: light dark; }
-			body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; padding: 12px; }
-			.header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-			h2 { font-size: 16px; margin: 0; }
-			#messages { display: flex; flex-direction: column; gap: 8px; min-height: 220px; max-height: 52vh; overflow: auto; margin-bottom: 10px; }
-			.message { border: 1px solid rgba(127,127,127,.25); border-radius: 10px; padding: 9px; white-space: pre-wrap; line-height: 1.4; }
-			.user { background: rgba(80, 130, 255, .12); }
-			.assistant { background: rgba(127,127,127,.10); }
-			textarea, select, button { box-sizing: border-box; width: 100%; }
-			textarea { min-height: 90px; resize: vertical; padding: 8px; }
-			select { padding: 7px; margin: 8px 0; }
-			button { padding: 8px; margin-top: 6px; cursor: pointer; }
-			.row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-			.hint { font-size: 12px; color: #777; margin-top: 8px; }
+			:root { color-scheme: light dark; --border: rgba(127,127,127,.22); --soft: rgba(127,127,127,.10); --accent: #4f7cff; }
+			* { box-sizing: border-box; }
+			body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; height: 100vh; margin: 0; display: flex; flex-direction: column; background: transparent; }
+			.header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+			h2 { font-size: 14px; margin: 0; font-weight: 650; }
+			.icon-button { width: auto; border: 0; background: transparent; font-size: 16px; padding: 4px 6px; opacity: .75; }
+			#messages { flex: 1; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+			.message { border: 1px solid var(--border); border-radius: 12px; padding: 10px 11px; white-space: pre-wrap; line-height: 1.42; font-size: 13px; }
+			.user { align-self: flex-end; max-width: 92%; background: rgba(79, 124, 255, .14); border-color: rgba(79, 124, 255, .35); }
+			.assistant { align-self: flex-start; max-width: 96%; background: var(--soft); }
+			.composer { border-top: 1px solid var(--border); padding: 10px; background: rgba(127,127,127,.04); }
+			textarea { width: 100%; min-height: 78px; max-height: 180px; resize: vertical; padding: 10px; border: 1px solid var(--border); border-radius: 12px; font: inherit; }
+			button { cursor: pointer; border: 1px solid var(--border); border-radius: 10px; padding: 8px 9px; font: inherit; background: var(--soft); }
+			button.primary { background: var(--accent); border-color: var(--accent); color: white; font-weight: 650; }
+			.actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 8px; }
+			.quick { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 7px; }
+			.hint { font-size: 11px; color: #777; margin-top: 8px; line-height: 1.35; }
 		</style>
-		<div class="header"><h2>GPT Chat</h2></div>
-		<div id="messages"><div class="message assistant">Hỏi về note hiện tại, hoặc bôi đen đoạn trong editor rồi chọn “Thay đoạn bôi đen”.</div></div>
-		<textarea id="prompt" placeholder="Ví dụ: sửa đoạn này ngắn gọn hơn, thêm bullet points, giải thích phần này..."></textarea>
-		<select id="mode">
-			<option value="answer">Chỉ trả lời trong chat</option>
-			<option value="append">Thêm câu trả lời vào cuối note</option>
-			<option value="replace-selection">Thay đoạn bôi đen</option>
-		</select>
-		<div class="row">
-			<button id="send">Gửi</button>
-			<button id="config">Cấu hình</button>
+		<div class="header">
+			<h2>GPT Assistant</h2>
+			<button class="icon-button" id="config" title="Cấu hình">⚙</button>
 		</div>
-		<div class="hint">Mẹo: bôi đen đoạn trong note → chuột phải → GPT: Tóm tắt đoạn bôi đen.</div>
+		<div id="messages">
+			<div class="message assistant">Bôi đen đoạn trong note rồi dùng <b>Apply</b> để thay đoạn đó, hoặc hỏi tự do như chat trong IDE.</div>
+		</div>
+		<div class="composer">
+			<textarea id="prompt" placeholder="Ask GPT, hoặc nhập yêu cầu chỉnh sửa đoạn đang bôi đen..."></textarea>
+			<div class="actions">
+				<button class="primary" data-action="ask">Ask</button>
+				<button data-action="apply">Apply to selection</button>
+			</div>
+			<div class="quick">
+				<button data-action="insert">Insert into note</button>
+				<button data-action="summarize">Summarize</button>
+			</div>
+			<div class="hint">⌘/Ctrl + Enter = Ask. Apply sẽ thay đoạn đang bôi đen. Summarize ưu tiên đoạn bôi đen, nếu không có sẽ tóm tắt note.</div>
+		</div>
 		<script>
 			const messages = document.getElementById('messages');
 			const promptInput = document.getElementById('prompt');
+			let lastAnswer = '';
 			function addMessage(role, text) {
 				const item = document.createElement('div');
 				item.className = 'message ' + role;
-				item.textContent = text;
+				if (role === 'assistant' && text.indexOf('<') >= 0) item.innerHTML = text;
+				else item.textContent = text;
 				messages.appendChild(item);
 				messages.scrollTop = messages.scrollHeight;
+				return item;
 			}
-			document.getElementById('send').addEventListener('click', async () => {
+			async function run(action) {
 				const prompt = promptInput.value.trim();
-				if (!prompt) return;
-				const mode = document.getElementById('mode').value;
-				addMessage('user', prompt);
-				promptInput.value = '';
-				addMessage('assistant', 'Đang xử lý...');
-				const pending = messages.lastElementChild;
+				const displayPrompt = prompt || (action === 'summarize' ? 'Summarize current selection/note' : 'Use previous answer');
+				addMessage('user', displayPrompt);
+				const pending = addMessage('assistant', 'Thinking...');
 				try {
-					const response = await webviewApi.postMessage({ type: 'chat', prompt, mode });
-					pending.textContent = response.ok ? response.text : 'Lỗi: ' + response.error;
+					const response = await webviewApi.postMessage({ type: 'chat', prompt, action, lastAnswer });
+					if (response.ok) {
+						lastAnswer = response.text || lastAnswer;
+						pending.textContent = response.message || response.text;
+						if (action === 'apply' || action === 'insert') pending.textContent = response.message + '\n\n' + response.text;
+						if (prompt) promptInput.value = '';
+					} else {
+						pending.textContent = 'Lỗi: ' + response.error;
+					}
 				} catch (error) {
 					pending.textContent = 'Lỗi: ' + String(error);
 				}
+			}
+			document.querySelectorAll('[data-action]').forEach(button => {
+				button.addEventListener('click', () => run(button.dataset.action));
 			});
 			document.getElementById('config').addEventListener('click', async () => {
 				await webviewApi.postMessage({ type: 'config' });
 			});
 			promptInput.addEventListener('keydown', (event) => {
-				if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') document.getElementById('send').click();
+				if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') run('ask');
 			});
 		</script>
 	`;
@@ -337,7 +356,7 @@ async function ensureChatPanel(): Promise<string> {
 
 	chatPanel = await joplin.views.panels.create('joplinGptAssistantChatPanel');
 	await joplin.views.panels.setHtml(chatPanel, chatPanelHtml());
-	await joplin.views.panels.onMessage(chatPanel, async (message: PanelMessage | { type: 'config' }) => {
+	await joplin.views.panels.onMessage(chatPanel, async (message: (PanelMessage & { lastAnswer?: string }) | { type: 'config' }) => {
 		try {
 			if (message.type === 'config') {
 				await openSettingsDialog();
@@ -346,16 +365,32 @@ async function ensureChatPanel(): Promise<string> {
 
 			const contextText = await buildContextText();
 			const systemPrompt = await settingValue(settings.systemPrompt);
+			const selection = await selectedText();
+			const prompt = message.prompt.trim();
+			let userPrompt = prompt;
+
+			if (message.action === 'summarize') {
+				userPrompt = prompt || 'Tóm tắt nội dung đang bôi đen. Nếu không có đoạn bôi đen, tóm tắt note hiện tại thành các ý chính.';
+			} else if (message.action === 'apply') {
+				if (!selection) throw new Error('Hãy bôi đen đoạn cần chỉnh sửa trước khi bấm Apply.');
+				userPrompt = `${prompt || 'Viết lại đoạn đang bôi đen rõ ràng và gọn hơn.'}\n\nChỉ trả về nội dung thay thế, không giải thích.`;
+			} else if (message.action === 'insert') {
+				userPrompt = prompt || message.lastAnswer || 'Viết tiếp nội dung phù hợp để chèn vào note.';
+			} else if (!userPrompt) {
+				throw new Error('Nhập câu hỏi hoặc yêu cầu trước khi bấm Ask.');
+			}
+
 			const answer = await askGpt([
 				{ role: 'system', content: systemPrompt },
-				{ role: 'user', content: `${message.prompt}\n\nNgữ cảnh:\n${contextText}` },
+				{ role: 'user', content: `${userPrompt}\n\nNgữ cảnh:\n${contextText}` },
 			]);
 
-			if (message.mode === 'append') {
-				await appendToCurrentNote(`## GPT Response\n\n${answer}`);
-			} else if (message.mode === 'replace-selection') {
-				if (!await selectedText()) throw new Error('Hãy bôi đen đoạn cần thay trước khi gửi.');
+			if (message.action === 'insert') {
+				await appendToCurrentNote(answer);
+				return { ok: true, text: answer, message: 'Inserted into note.' };
+			} else if (message.action === 'apply') {
 				await replaceSelection(answer);
+				return { ok: true, text: answer, message: 'Applied to selection.' };
 			}
 
 			return { ok: true, text: answer };
