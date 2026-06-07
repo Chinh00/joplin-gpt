@@ -17,6 +17,12 @@ type ChatCompletionResponse = {
 	};
 };
 
+type PanelMessage = {
+	type: 'chat';
+	prompt: string;
+	mode: 'answer' | 'append' | 'replace-selection';
+};
+
 const settingSection = 'joplinGptAssistant';
 const settings = {
 	provider: 'joplinGptAssistant.provider',
@@ -34,6 +40,8 @@ const providerValues = {
 	custom: 'custom',
 };
 
+let chatPanel: string | null = null;
+
 async function settingValue(name: string): Promise<string> {
 	const value = await joplin.settings.value(name);
 	return String(value || '').trim();
@@ -43,6 +51,19 @@ async function currentNote(): Promise<any> {
 	const note = await joplin.workspace.selectedNote();
 	if (!note) throw new Error('Không có note nào đang được chọn.');
 	return note;
+}
+
+async function selectedText(): Promise<string> {
+	try {
+		const text = await joplin.commands.execute('selectedText');
+		return String(text || '').trim();
+	} catch (error) {
+		return '';
+	}
+}
+
+async function replaceSelection(text: string): Promise<void> {
+	await joplin.commands.execute('replaceSelection', text);
 }
 
 function stripTrailingSlash(value: string): string {
@@ -174,6 +195,58 @@ async function appendToCurrentNote(markdown: string): Promise<void> {
 	});
 }
 
+async function buildContextText(): Promise<string> {
+	const note = await currentNote();
+	const selection = await selectedText();
+	return `Tiêu đề note: ${note.title || '(không có tiêu đề)'}\n\nĐoạn đang bôi đen:\n${selection || '(không có đoạn bôi đen)'}\n\nToàn bộ note:\n${note.body || ''}`;
+}
+
+async function summarizeSelectionOrNote(): Promise<void> {
+	try {
+		const note = await currentNote();
+		const selection = await selectedText();
+		const targetText = selection || note.body || '';
+		if (!targetText.trim()) throw new Error('Không có nội dung để tóm tắt.');
+
+		const systemPrompt = await settingValue(settings.systemPrompt);
+		const answer = await askGpt([
+			{ role: 'system', content: systemPrompt },
+			{ role: 'user', content: `Hãy tóm tắt nội dung sau thành các ý chính, bằng tiếng Việt:\n\n${targetText}` },
+		]);
+
+		if (selection) {
+			await replaceSelection(`> GPT Summary\n>\n${answer.split('\n').map(line => `> ${line}`).join('\n')}\n\n${selection}`);
+		} else {
+			await appendToCurrentNote(`## GPT Summary\n\n${answer}`);
+		}
+	} catch (error) {
+		await joplin.views.dialogs.showMessageBox(`Joplin GPT Assistant: ${error instanceof Error ? error.message : String(error)}`);
+	}
+}
+
+async function editSelectionWithInstruction(instruction: string): Promise<string> {
+	const selection = await selectedText();
+	if (!selection) throw new Error('Hãy bôi đen đoạn cần chỉnh sửa trước.');
+
+	const systemPrompt = await settingValue(settings.systemPrompt);
+	return askGpt([
+		{ role: 'system', content: systemPrompt },
+		{
+			role: 'user',
+			content: `${instruction}\n\nChỉ trả về nội dung đã chỉnh sửa, không giải thích thêm.\n\nĐoạn cần chỉnh sửa:\n${selection}`,
+		},
+	]);
+}
+
+async function rewriteSelectedText(): Promise<void> {
+	try {
+		const answer = await editSelectionWithInstruction('Hãy viết lại đoạn này rõ ràng, mạch lạc hơn, giữ nguyên ý chính.');
+		await replaceSelection(answer);
+	} catch (error) {
+		await joplin.views.dialogs.showMessageBox(`Joplin GPT Assistant: ${error instanceof Error ? error.message : String(error)}`);
+	}
+}
+
 async function runNoteAction(title: string, instruction: string): Promise<void> {
 	try {
 		const note = await currentNote();
@@ -191,6 +264,112 @@ async function runNoteAction(title: string, instruction: string): Promise<void> 
 	} catch (error) {
 		await joplin.views.dialogs.showMessageBox(`Joplin GPT Assistant: ${error instanceof Error ? error.message : String(error)}`);
 	}
+}
+
+function chatPanelHtml(): string {
+	return `
+		<style>
+			:root { color-scheme: light dark; }
+			body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; padding: 12px; }
+			.header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+			h2 { font-size: 16px; margin: 0; }
+			#messages { display: flex; flex-direction: column; gap: 8px; min-height: 220px; max-height: 52vh; overflow: auto; margin-bottom: 10px; }
+			.message { border: 1px solid rgba(127,127,127,.25); border-radius: 10px; padding: 9px; white-space: pre-wrap; line-height: 1.4; }
+			.user { background: rgba(80, 130, 255, .12); }
+			.assistant { background: rgba(127,127,127,.10); }
+			textarea, select, button { box-sizing: border-box; width: 100%; }
+			textarea { min-height: 90px; resize: vertical; padding: 8px; }
+			select { padding: 7px; margin: 8px 0; }
+			button { padding: 8px; margin-top: 6px; cursor: pointer; }
+			.row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+			.hint { font-size: 12px; color: #777; margin-top: 8px; }
+		</style>
+		<div class="header"><h2>GPT Chat</h2></div>
+		<div id="messages"><div class="message assistant">Hỏi về note hiện tại, hoặc bôi đen đoạn trong editor rồi chọn “Thay đoạn bôi đen”.</div></div>
+		<textarea id="prompt" placeholder="Ví dụ: sửa đoạn này ngắn gọn hơn, thêm bullet points, giải thích phần này..."></textarea>
+		<select id="mode">
+			<option value="answer">Chỉ trả lời trong chat</option>
+			<option value="append">Thêm câu trả lời vào cuối note</option>
+			<option value="replace-selection">Thay đoạn bôi đen</option>
+		</select>
+		<div class="row">
+			<button id="send">Gửi</button>
+			<button id="config">Cấu hình</button>
+		</div>
+		<div class="hint">Mẹo: bôi đen đoạn trong note → chuột phải → GPT: Tóm tắt đoạn bôi đen.</div>
+		<script>
+			const messages = document.getElementById('messages');
+			const promptInput = document.getElementById('prompt');
+			function addMessage(role, text) {
+				const item = document.createElement('div');
+				item.className = 'message ' + role;
+				item.textContent = text;
+				messages.appendChild(item);
+				messages.scrollTop = messages.scrollHeight;
+			}
+			document.getElementById('send').addEventListener('click', async () => {
+				const prompt = promptInput.value.trim();
+				if (!prompt) return;
+				const mode = document.getElementById('mode').value;
+				addMessage('user', prompt);
+				promptInput.value = '';
+				addMessage('assistant', 'Đang xử lý...');
+				const pending = messages.lastElementChild;
+				try {
+					const response = await webviewApi.postMessage({ type: 'chat', prompt, mode });
+					pending.textContent = response.ok ? response.text : 'Lỗi: ' + response.error;
+				} catch (error) {
+					pending.textContent = 'Lỗi: ' + String(error);
+				}
+			});
+			document.getElementById('config').addEventListener('click', async () => {
+				await webviewApi.postMessage({ type: 'config' });
+			});
+			promptInput.addEventListener('keydown', (event) => {
+				if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') document.getElementById('send').click();
+			});
+		</script>
+	`;
+}
+
+async function ensureChatPanel(): Promise<string> {
+	if (chatPanel) return chatPanel;
+
+	chatPanel = await joplin.views.panels.create('joplinGptAssistantChatPanel');
+	await joplin.views.panels.setHtml(chatPanel, chatPanelHtml());
+	await joplin.views.panels.onMessage(chatPanel, async (message: PanelMessage | { type: 'config' }) => {
+		try {
+			if (message.type === 'config') {
+				await openSettingsDialog();
+				return { ok: true, text: 'Đã mở cấu hình.' };
+			}
+
+			const contextText = await buildContextText();
+			const systemPrompt = await settingValue(settings.systemPrompt);
+			const answer = await askGpt([
+				{ role: 'system', content: systemPrompt },
+				{ role: 'user', content: `${message.prompt}\n\nNgữ cảnh:\n${contextText}` },
+			]);
+
+			if (message.mode === 'append') {
+				await appendToCurrentNote(`## GPT Response\n\n${answer}`);
+			} else if (message.mode === 'replace-selection') {
+				if (!await selectedText()) throw new Error('Hãy bôi đen đoạn cần thay trước khi gửi.');
+				await replaceSelection(answer);
+			}
+
+			return { ok: true, text: answer };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+
+	return chatPanel;
+}
+
+async function showChatPanel(): Promise<void> {
+	const panel = await ensureChatPanel();
+	await joplin.views.panels.show(panel, true);
 }
 
 joplin.plugins.register({
@@ -277,6 +456,24 @@ joplin.plugins.register({
 		});
 
 		await joplin.commands.register({
+			name: 'joplinGptSummarizeSelection',
+			label: 'GPT: Tóm tắt đoạn bôi đen',
+			execute: async () => summarizeSelectionOrNote(),
+		});
+
+		await joplin.commands.register({
+			name: 'joplinGptRewriteSelection',
+			label: 'GPT: Viết lại đoạn bôi đen',
+			execute: async () => rewriteSelectedText(),
+		});
+
+		await joplin.commands.register({
+			name: 'joplinGptShowChatPanel',
+			label: 'GPT: Mở chatbot bên phải',
+			execute: async () => showChatPanel(),
+		});
+
+		await joplin.commands.register({
 			name: 'joplinGptRewriteNote',
 			label: 'GPT: Viết lại note rõ hơn',
 			execute: async () => runNoteAction('GPT Rewrite', 'Hãy viết lại note này rõ ràng, có cấu trúc hơn, không thêm thông tin không có trong note.'),
@@ -284,10 +481,16 @@ joplin.plugins.register({
 
 		await joplin.views.menuItems.create('joplinGptOpenSettingsMenu', 'joplinGptOpenSettings', MenuItemLocation.Tools);
 		await joplin.views.menuItems.create('joplinGptOpenSettingsNoteMenu', 'joplinGptOpenSettings', MenuItemLocation.Note);
+		await joplin.views.menuItems.create('joplinGptShowChatPanelMenu', 'joplinGptShowChatPanel', MenuItemLocation.Tools);
 		await joplin.views.menuItems.create('joplinGptSummarizeNoteMenu', 'joplinGptSummarizeNote', MenuItemLocation.Tools);
 		await joplin.views.menuItems.create('joplinGptRewriteNoteMenu', 'joplinGptRewriteNote', MenuItemLocation.Tools);
+		await joplin.views.menuItems.create('joplinGptSummarizeSelectionContextMenu', 'joplinGptSummarizeSelection', MenuItemLocation.EditorContextMenu);
+		await joplin.views.menuItems.create('joplinGptRewriteSelectionContextMenu', 'joplinGptRewriteSelection', MenuItemLocation.EditorContextMenu);
 		await joplin.views.toolbarButtons.create('joplinGptOpenSettingsToolbar', 'joplinGptOpenSettings', ToolbarButtonLocation.NoteToolbar);
 		await joplin.views.toolbarButtons.create('joplinGptSummarizeNoteToolbar', 'joplinGptSummarizeNote', ToolbarButtonLocation.NoteToolbar);
+		await joplin.views.toolbarButtons.create('joplinGptChatPanelToolbar', 'joplinGptShowChatPanel', ToolbarButtonLocation.NoteToolbar);
+
+		await showChatPanel();
 
 		const isConfigured = Boolean(await joplin.settings.value(settings.isConfigured));
 		if (!isConfigured) {
